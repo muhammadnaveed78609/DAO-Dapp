@@ -2,9 +2,10 @@ import Head from "next/head";
 import Image from "next/image";
 import { Inter } from "@next/font/google";
 import styles from "../styles/Home.module.css";
-import React, { useState, useRef } from "react";
+import React, { useState, useRef, useEffect } from "react";
 import { Contract, utils, providers } from "ethers";
 import Web3Modal from "web3modal";
+import { formatEther } from "ethers/lib/utils";
 import {
   abi_FalconDAO,
   abi_fakeNFT,
@@ -16,6 +17,9 @@ const inter = Inter({ subsets: ["latin"] });
 export default function Home() {
   const web3ModalRef = useRef();
   const [walletConnect, setWalletConnect] = useState(false);
+  const [Treasurybalance, setTreasurybalance] = useState("0");
+  const [selectedTab, setselectedTab] = useState("");
+  const [proposals, setProposls] = useState([]);
   const [Owner, setIsOwner] = useState(false);
   const [loading, setLoading] = useState(false);
   const [UserNFTBalance, setUserNFTBalance] = useState(0);
@@ -24,7 +28,7 @@ export default function Home() {
   // Helper function to fetch a Provider/Signer instance from Metamask
   const getProviderorSigner = async (needsigner = false) => {
     const provider = await web3ModalRef.current.connect();
-    const web3provider = await providers.Web3Provider(provider);
+    const web3provider = new providers.Web3Provider(provider);
     if (!needsigner) {
       const signer = web3provider.getSigner();
       return signer;
@@ -60,7 +64,7 @@ export default function Home() {
     const contract = getDaoContractInstance(signer);
     const owner_add = await contract.owner();
     const signer_add = await signer.getAddress();
-    if (owner_add.toLowerCase() == signer_add.toLowerCase()) {
+    if (owner_add.toLowerCase() === signer_add.toLowerCase()) {
       setIsOwner(true);
     }
   };
@@ -87,11 +91,11 @@ export default function Home() {
     try {
       const signer = await getProviderorSigner(true);
       const contract = getFakeNftContractInstance(signer);
-      const balance = await balance.balanceof(signer.getAddress());
+      const balance = await contract.balanceof(signer.getAddress());
       setUserNFTBalance(balance);
     } catch (error) {
       console.error(error);
-      window.alert(error.data.message);
+      window.alert(error);
     }
   };
   // Reads the number of proposals in the DAO contract and sets the `numProposals` state variable
@@ -119,118 +123,283 @@ export default function Home() {
       console.log(error);
     }
   };
+  // Reads the ETH balance of the DAO contract and sets the `treasuryBalance` state variable
+  const getDAOTreasuryBalance = async () => {
+    try {
+      const provider = await getProviderorSigner();
+      const balance = await provider.balanceof(FALCONDEVDAO);
+      setTreasurybalance(balance.toString());
+    } catch (error) {
+      console.error(error);
+    }
+  };
+
+  /**
+   * withdrawCoins: withdraws ether by calling
+   * the withdraw function in the contract
+   */
+  const withdrawDAOEthe = async () => {
+    try {
+      const signer = await getProviderorSigner(true);
+      const contract = getDaoContractInstance(signer);
+      const withdrawcoins = await contract.withdraw();
+      setLoading(true);
+      await withdrawcoins.wait();
+      setLoading(false);
+      getDAOTreasuryBalance();
+    } catch (error) {
+      console.error(error);
+      window.alert(error);
+    }
+  };
+  // Helper function to fetch and parse one proposal from the DAO contract
+  // Given the Proposal ID
+  // and converts the returned data into a Javascript object with values we can use
+  const fetchProposalById = async (id) => {
+    try {
+      const provider = await getProviderorSigner();
+      const contract = getDaoContractInstance(provider);
+      const proposal = await contract.proposals(id);
+      const parsedProposal = {
+        proposalid: id,
+        NftTokenId: proposal.NFTtokenId.toString(),
+        deadline: new Date(parseInt(proposal.deadline.toString())),
+        yesvote: proposal.yesvote.toStirng(),
+        novote: proposal.novotes.toString(),
+        executed: proposal.executed.toString(),
+      };
+      return parsedProposal;
+    } catch (error) {
+      console.error(error);
+      window.alert(error);
+    }
+  };
+  // Runs a loop `numProposals` times to fetch all proposals in the DAO
+  // and sets the `proposals` state variable
+  const fetchallproposals = async () => {
+    const proposal_arr = [];
+    for (let i = 0; i < NumberOfProposal; i++) {
+      const proposals = await fetchProposalById(i);
+      proposal_arr.push(proposals);
+    }
+    setProposls(proposal_arr);
+    return proposal_arr;
+  };
+  // Calls the `voteOnProposal` function in the contract, using the passed
+  // proposal ID and Vote
+  const voteOnProposal = async (proposalIndex, _vote) => {
+    try {
+      const signer = await getProviderorSigner(true);
+      const contract = getDaoContractInstance(signer);
+      let vote = _vote == "YES" ? 0 : 1;
+      const _voteOnProposal = await contract.voteOnProposal(
+        proposalIndex,
+        vote
+      );
+      setLoading(true);
+      await _voteOnProposal.wait();
+      setLoading(false);
+    } catch (error) {
+      console.error(error);
+      window.alert(error);
+    }
+  };
+  // Calls the `executeProposal` function in the contract, using
+  // the passed proposal ID
+  const executeProposal = async (_proposalIndex) => {
+    try {
+      const signer = await getProviderorSigner();
+      const contract = getDaoContractInstance(signer);
+      const _executeProposal = await contract.executeProposal(_proposalIndex);
+      setLoading(true);
+      await _executeProposal.wait();
+      setLoading(false);
+      await fetchallproposals();
+      getDAOTreasuryBalance();
+    } catch (error) {
+      console.error(error);
+      window.alert(error);
+    }
+  };
+  // piece of code that runs everytime the value of `walletConnected` changes
+  // so when a wallet connects or disconnects
+  // Prompts user to connect wallet if not connected
+  // and then calls helper functions to fetch the
+  // DAO Treasury Balance, User NFT Balance, and Number of Proposals in the DAO
+  useEffect(() => {
+    if (!walletConnect) {
+      web3ModalRef.current = new Web3Modal({
+        network: "goerli",
+        providerOptions: {},
+        disableInjectedProvider: false,
+      });
+      ConnectWallet().then(() => {
+        getDAOTreasuryBalance();
+        getUserNFTBalance();
+        getDAOOwner();
+        getnumProposals();
+      });
+    }
+  }, walletConnect);
+  // Piece of code that runs everytime the value of `selectedTab` changes
+  // Used to re-fetch all proposals in the DAO when user switches
+  // to the 'View Proposals' tab
+  useEffect(() => {
+    if (selectedTab === "View Proposals") {
+      fetchallproposals();
+    }
+  }, [selectedTab]);
+  // Render the contents of the appropriate tab based on `selectedTab`
+  const renderTabs = () => {
+    if (selectedTab == "Create Proposal") {
+      return renderViewProposalsTab();
+    } else if (selectedTab === "View Proposals") {
+      return renderCreateProposalTab();
+    }
+    return null;
+  };
+  const renderCreateProposalTab = () => {
+    if (loading) {
+      <div className={styles.description}>
+        Loading... Waiting for transaction...
+      </div>;
+    } else if (UserNFTBalance == 0) {
+      <div className={styles.description}>
+        You do not own any Falcon NFTs. <br />
+        <b>You cannot create or vote on proposals</b>
+      </div>;
+    } else {
+      return (
+        <div className={styles.container}>
+          <label>Fake NFT Token ID to Purchase: </label>
+          <input
+            placeholder="0"
+            type="number"
+            onChange={(e) => setfake__nftTokenId(e.target.value)}
+          />
+          <button className={styles.button2} onClick={createProposal}>
+            Create
+          </button>
+        </div>
+      );
+    }
+  };
+  // Renders the 'View Proposals' tab content
+  const renderViewProposalsTab = () => {
+    if (loading) {
+      return (
+        <div className={styles.description}>
+          Loading... Waiting for transaction...
+        </div>
+      );
+    } else if (proposals.length == 0) {
+      return (
+        <div className={styles.description}>No proposals have been created</div>
+      );
+    } else {
+      return (
+        <div>
+          {proposals.map((p, index) => (
+            <div key={index} className={styles.proposalCard}>
+              <p>Proposal ID: {p.proposalid}</p>
+              <p>Fake User NFT Balance: {p.NftTokenId}</p>
+              <p>Deadline: {p.deadline.toLocaleString()}</p>
+              <p>Yes Votes: {p.yesvote}</p>
+              <p>No Votes: {p.novote}</p>
+              <p>Executes?: {p.executed.toStirng()}</p>
+              {p.deadline.getTime() > Date.now() && !p.executed ? (
+                <div className={styles.flex}>
+                  <button
+                    className={styles.button2}
+                    onClick={() => voteOnProposal(p.proposalId, "YES")}
+                  >
+                    Vote YES
+                  </button>
+                  <button
+                    className={styles.button2}
+                    onClick={() => voteOnProposal(p.proposalId, "NO")}
+                  >
+                    Vote NAY
+                  </button>
+                </div>
+              ) : p.deadline.getTime() < Date.now() && !p.executed ? (
+                <div className={styles.flex}>
+                  <button
+                    className={styles.button2}
+                    onClick={() => executeProposal(p.proposalId)}
+                  >
+                    Execute Proposal
+                    {p.yayVotes > p.nayVotes ? "(YES)" : "(NO)"}
+                  </button>
+                </div>
+              ) : (
+                <div className={styles.description}>Proposal Executed</div>
+              )}
+            </div>
+          ))}
+        </div>
+      );
+    }
+  };
   return (
     <>
-      <Head>
-        <title>Create Next App</title>
-        <meta name="description" content="Generated by create next app" />
-        <meta name="viewport" content="width=device-width, initial-scale=1" />
-        <link rel="icon" href="/favicon.ico" />
-      </Head>
-      <main className={styles.main}>
-        <div className={styles.description}>
-          <p>
-            Get started by editing&nbsp;
-            <code className={styles.code}>pages/index.js</code>
-          </p>
+      <div className={styles.headdiv}>
+        <Head>
+          <title>Falcon DAO</title>
+          <meta name="description" content="CryptoDevs DAO" />
+          <link rel="icon" href="/favicon.ico" />
+        </Head>
+        <div className={styles.falcon}>Falcon IT Consulting</div>
+        <div className={styles.main}>
+          <div className={styles.main1}>
+            <div className={styles.parentdiv}>
+              <h1 className={styles.title}>Welcome Falcon Devs!</h1>
+              <div className={styles.description}>Welcome to the DAO!</div>
+              <div className={styles.description}>
+                Your CryptoDevs NFT Balance: {UserNFTBalance}
+                <br />
+                Treasury Balance: {formatEther(Treasurybalance)} ETH
+                <br />
+                Total Number of Proposals: {NumberOfProposal}
+              </div>
+              <div className={styles.flex}>
+                <button
+                  className={styles.button2}
+                  onClick={() => setselectedTab("Create Proposal")}
+                >
+                  Create Proposal
+                </button>
+                <button
+                  className={styles.button}
+                  onClick={() => setselectedTab("View Proposals")}
+                >
+                  View Proposals
+                </button>
+              </div>
+              {renderTabs()}
+              {Owner ? (
+                <div>
+                  {loading ? (
+                    <button className={styles.button}>Loading...</button>
+                  ) : (
+                    <button className={styles.button} onClick={withdrawDAOEthe}>
+                      Withdraw DAO ETH
+                    </button>
+                  )}
+                </div>
+              ) : (
+                ""
+              )}
+            </div>
+          </div>
           <div>
-            <a
-              href="https://vercel.com?utm_source=create-next-app&utm_medium=default-template&utm_campaign=create-next-app"
-              target="_blank"
-              rel="noopener noreferrer"
-            >
-              By{" "}
-              <Image
-                src="/vercel.svg"
-                alt="Vercel Logo"
-                className={styles.vercelLogo}
-                width={100}
-                height={24}
-                priority
-              />
-            </a>
+            <img className={styles.image} src="/Falcon.svg" />
           </div>
         </div>
-
-        <div className={styles.center}>
-          <Image
-            className={styles.logo}
-            src="/next.svg"
-            alt="Next.js Logo"
-            width={180}
-            height={37}
-            priority
-          />
-          <div className={styles.thirteen}>
-            <Image
-              src="/thirteen.svg"
-              alt="13"
-              width={40}
-              height={31}
-              priority
-            />
-          </div>
-        </div>
-
-        <div className={styles.grid}>
-          <a
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=default-template&utm_campaign=create-next-app"
-            className={styles.card}
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <h2 className={inter.className}>
-              Docs <span>-&gt;</span>
-            </h2>
-            <p className={inter.className}>
-              Find in-depth information about Next.js features and&nbsp;API.
-            </p>
-          </a>
-
-          <a
-            href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=default-template&utm_campaign=create-next-app"
-            className={styles.card}
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <h2 className={inter.className}>
-              Learn <span>-&gt;</span>
-            </h2>
-            <p className={inter.className}>
-              Learn about Next.js in an interactive course with&nbsp;quizzes!
-            </p>
-          </a>
-
-          <a
-            href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=default-template&utm_campaign=create-next-app"
-            className={styles.card}
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <h2 className={inter.className}>
-              Templates <span>-&gt;</span>
-            </h2>
-            <p className={inter.className}>
-              Discover and deploy boilerplate example Next.js&nbsp;projects.
-            </p>
-          </a>
-
-          <a
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=default-template&utm_campaign=create-next-app"
-            className={styles.card}
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <h2 className={inter.className}>
-              Deploy <span>-&gt;</span>
-            </h2>
-            <p className={inter.className}>
-              Instantly deploy your Next.js site to a shareable URL
-              with&nbsp;Vercel.
-            </p>
-          </a>
-        </div>
-      </main>
+        <footer className={styles.footer}>
+          Made with &#10084; by Falcon Devs
+        </footer>
+      </div>
     </>
   );
 }
